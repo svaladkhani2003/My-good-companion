@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Message, PsychologicalAnalysis, AnalysisPreferences } from '../types';
-import { getTherapistResponse } from '../services/geminiService';
+import * as Gemini from '../services/geminiService';
 import PsychologicalChart from './PsychologicalChart';
 import { INITIAL_ANALYSIS } from '../constants';
 
@@ -13,304 +13,333 @@ interface ChatScreenProps {
   onUpdateUser: (user: User) => void;
 }
 
+interface AnalysisPoint {
+  time: string;
+  stress: number;
+  anxiety: number;
+  energy: number;
+}
+
 const ChatScreen: React.FC<ChatScreenProps> = ({ user, onLogout, onNavigateToAssessments, onNavigateToProfile, onUpdateUser }) => {
   const [messages, setMessages] = useState<Message[]>(user.history || []);
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [analysisHistory, setAnalysisHistory] = useState<{ time: string; value: number }[]>([]);
-  const [currentAnalysis, setCurrentAnalysis] = useState<PsychologicalAnalysis>(INITIAL_ANALYSIS);
+  const [showMediaMenu, setShowMediaMenu] = useState(false);
+  const [analysisHistory, setAnalysisHistory] = useState<AnalysisPoint[]>([]);
+  const [currentAnalysis, setCurrentAnalysis] = useState<PsychologicalAnalysis>(user.history?.[user.history.length-1]?.analysis || INITIAL_ANALYSIS);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaInputRef = useRef<HTMLInputElement>(null);
+  const [mediaToUpload, setMediaToUpload] = useState<string | null>(null);
 
-  const analysisPrefs: AnalysisPreferences = user.analysisPreferences || { focusArea: 'general', depth: 'balanced' };
-
-  useEffect(() => {
-    if (!user.history || user.history.length === 0) {
-      const greeting: Message = {
-        id: '1',
-        sender: 'ai',
-        text: `سلام ${user.name}. من "همراه خوب من 🌱" هستم. خوشحالم که دوباره اینجا هستی. امروز چه مشکلی ذهنت رو درگیر کرده؟ من اینجام تا به حرف‌هات گوش بدم.`,
-        timestamp: new Date().toISOString()
-      };
-      const initialMsgs = [greeting];
-      setMessages(initialMsgs);
-      saveMessages(initialMsgs);
-    }
-    
-    const lastMsgWithAnalysis = [...(user.history || [])].reverse().find(m => m.analysis);
-    if (lastMsgWithAnalysis?.analysis) {
-        setCurrentAnalysis(lastMsgWithAnalysis.analysis);
-    }
-    
-    setAnalysisHistory([{ time: '10:00', value: currentAnalysis.stressLevel }]);
-  }, [user.name]);
+  const prefs = user.analysisPreferences || { 
+    focusArea: 'general', depth: 'balanced', responseTone: 'balanced', thinkingEnabled: false, searchEnabled: true, modelSpeed: 'balanced' 
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const saveMessages = (msgs: Message[]) => {
-    onUpdateUser({
-        ...user,
-        history: msgs
-    });
-  };
-
-  const handleSend = async () => {
-    if (!inputText.trim()) return;
-
-    const userMsg: Message = {
-      id: Date.now().toString(),
-      sender: 'user',
-      text: inputText,
-      timestamp: new Date().toISOString()
-    };
-
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
-    setInputText('');
-    setIsTyping(true);
-
-    const history: { role: 'user' | 'model'; parts: { text: string }[] }[] = newMessages.map(m => ({
-      role: (m.sender === 'ai' ? 'model' : 'user') as 'user' | 'model',
-      parts: [{ text: m.text }]
-    }));
-
-    const response = await getTherapistResponse(history, inputText, analysisPrefs);
-
-    const aiMsg: Message = {
-      id: (Date.now() + 1).toString(),
-      sender: 'ai',
-      text: response.text,
-      timestamp: new Date().toISOString(),
-      analysis: response.analysis
-    };
-
-    const finalMessages = [...newMessages, aiMsg];
-    setMessages(finalMessages);
-    saveMessages(finalMessages);
-    setIsTyping(false);
-
-    if (response.analysis) {
-      setCurrentAnalysis(response.analysis);
-      setAnalysisHistory(prev => [
-        ...prev, 
-        { 
-          time: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }), 
-          value: response.analysis?.stressLevel || 0 
-        }
-      ].slice(-10));
+  // Initial Personalized Greeting
+  useEffect(() => {
+    if (messages.length === 0) {
+      const greetingText = `سلام ${user.name} جان! خوشحالم که امروز در کنارت هستم. چطور می‌توانم امروز به تو کمک کنم؟ 😊`;
+      const greetingMsg: Message = {
+        id: 'greeting-' + Date.now(),
+        sender: 'ai',
+        text: greetingText,
+        timestamp: new Date().toISOString()
+      };
+      setMessages([greetingMsg]);
+      Gemini.speakText(greetingText);
     }
-  };
+  }, [user.name]);
 
-  const updatePreference = (key: keyof AnalysisPreferences, value: string) => {
-    onUpdateUser({
-      ...user,
-      analysisPreferences: {
-        ...analysisPrefs,
-        [key]: value
-      }
-    });
-  };
-
-  const handleAvatarClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
       reader.onloadend = () => {
-        onUpdateUser({
-          ...user,
-          avatar: reader.result as string
-        });
+        setMediaToUpload(reader.result as string);
+        setShowMediaMenu(false);
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const userAvatarSrc = user.avatar || `https://ui-avatars.com/api/?name=${user.name}&background=135bec&color=fff`;
+  const handleSend = async (customPrompt?: string, mode: 'chat' | 'image' | 'video' | 'edit' = 'chat') => {
+    const prompt = customPrompt || inputText;
+    if (!prompt.trim() && !mediaToUpload) return;
+
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      sender: 'user',
+      text: prompt,
+      timestamp: new Date().toISOString(),
+      media: mediaToUpload ? { type: 'image', url: mediaToUpload } : undefined
+    };
+
+    setMessages(prev => [...prev, userMsg]);
+    setInputText('');
+    setMediaToUpload(null);
+    setIsTyping(true);
+    setShowMediaMenu(false);
+
+    try {
+      const history = messages.map(m => ({
+        role: (m.sender === 'ai' ? 'model' : 'user') as 'user' | 'model',
+        parts: [{ text: m.text }]
+      }));
+
+      let aiMsg: Message = { id: Date.now().toString(), sender: 'ai', text: '', timestamp: new Date().toISOString() };
+
+      if (mode === 'image') {
+        const imgUrl = await Gemini.generateImage(prompt);
+        aiMsg.text = "تصویر درمانی شما آماده شد:";
+        aiMsg.media = imgUrl ? { type: 'image', url: imgUrl } : undefined;
+      } else if (mode === 'video') {
+        const videoUrl = await Gemini.generateVideo(prompt, mediaToUpload || undefined);
+        aiMsg.text = "ویدیوی شما آماده شد:";
+        aiMsg.media = videoUrl ? { type: 'video', url: videoUrl } : undefined;
+      } else {
+        const parts: any[] = [{ text: prompt }];
+        if (userMsg.media) parts.push({ inlineData: { data: userMsg.media.url.split(',')[1], mimeType: 'image/png' } });
+        
+        const aiResponse = await Gemini.getTherapistResponse(history, parts, prefs, user.theme);
+        aiMsg.text = aiResponse.text;
+        aiMsg.analysis = aiResponse.analysis;
+        aiMsg.grounding = aiResponse.grounding;
+        aiMsg.isThinking = prefs.thinkingEnabled;
+        
+        Gemini.speakText(aiResponse.text);
+
+        if (aiResponse.analysis) {
+          setCurrentAnalysis(aiResponse.analysis);
+          setAnalysisHistory(prev => [...prev, { 
+            time: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }), 
+            stress: aiResponse.analysis.stressLevel,
+            anxiety: aiResponse.analysis.anxietyLevel,
+            energy: aiResponse.analysis.energy
+          }].slice(-10));
+        }
+      }
+
+      const finalMessages = [...messages, userMsg, aiMsg];
+      setMessages(finalMessages);
+      onUpdateUser({ ...user, history: finalMessages });
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  const updatePref = (key: keyof AnalysisPreferences, val: any) => {
+    onUpdateUser({ ...user, analysisPreferences: { ...prefs, [key]: val } });
+  };
 
   return (
-    <div className="h-screen flex flex-col bg-background-light dark:bg-background-dark max-w-md mx-auto overflow-hidden relative transition-colors duration-300">
+    <div className="h-screen flex flex-col bg-background-light dark:bg-background-dark max-w-md mx-auto overflow-hidden relative transition-colors duration-300 font-sans">
       <header className="shrink-0 flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-background-dark/80 backdrop-blur-md z-20">
         <div className="flex items-center gap-3">
-          <div className="relative cursor-pointer group" onClick={handleAvatarClick}>
-            <div className="size-10 rounded-full border-2 border-primary overflow-hidden relative">
-              <img src={userAvatarSrc} alt="User Avatar" className="w-full h-full object-cover" />
-              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                <span className="material-symbols-outlined text-white text-sm">photo_camera</span>
-              </div>
-            </div>
-            <div className="absolute bottom-0 right-0 size-2.5 bg-green-500 rounded-full border-2 border-white dark:border-[#101622]"></div>
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              className="hidden" 
-              accept="image/*" 
-              onChange={handleFileChange} 
-            />
+          <div className="size-10 rounded-full border-2 border-primary overflow-hidden shadow-inner">
+            <img src={user.avatar || `https://ui-avatars.com/api/?name=${user.name}`} alt="User" className="w-full h-full object-cover" />
           </div>
           <div>
+            <h2 className="text-sm font-bold">همراه هوشمند من 🌱</h2>
             <div className="flex items-center gap-1">
-              <h2 className="text-sm font-bold">همراه خوب من 🌱</h2>
-              <span className="material-symbols-outlined text-[10px] text-green-500">verified</span>
+               <span className={`size-2 rounded-full ${prefs.thinkingEnabled ? 'bg-purple-500 animate-pulse' : 'bg-green-500'}`}></span>
+               <p className="text-[10px] text-slate-400">{prefs.thinkingEnabled ? 'در حال تفکر...' : 'آنلاین'}</p>
             </div>
-            <p className="text-[10px] text-slate-400">در حال گفتگو با {user.name}</p>
           </div>
         </div>
         <div className="flex gap-1">
-          <button onClick={() => setShowSettings(!showSettings)} className={`size-10 flex items-center justify-center rounded-full transition-colors ${showSettings ? 'bg-primary text-white' : 'hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400'}`}>
-            <span className="material-symbols-outlined">tune</span>
+          <button onClick={() => setShowSettings(!showSettings)} className="size-10 flex items-center justify-center rounded-full hover:bg-slate-200 dark:hover:bg-slate-800 active:scale-90 transition-all text-slate-400">
+            <span className="material-symbols-outlined">{showSettings ? 'close' : 'tune'}</span>
           </button>
-          <button onClick={onNavigateToProfile} className="size-10 flex items-center justify-center rounded-full hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400">
+          <button onClick={onNavigateToProfile} className="size-10 flex items-center justify-center rounded-full hover:bg-slate-200 dark:hover:bg-slate-800 active:scale-90 transition-all text-slate-400">
             <span className="material-symbols-outlined">person</span>
           </button>
         </div>
       </header>
 
-      {/* Analysis Settings Overlay */}
+      {/* Settings Overlay */}
       {showSettings && (
-        <div className="absolute inset-x-0 top-[73px] bottom-0 z-30 bg-black/40 backdrop-blur-sm flex flex-col p-4 animate-in fade-in duration-200">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-2xl space-y-6 animate-in slide-in-from-top-4 duration-300">
-            <div className="flex justify-between items-center">
-               <h3 className="font-bold text-lg">تنظیمات هوش مصنوعی</h3>
-               <button onClick={() => setShowSettings(false)} className="size-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
-                  <span className="material-symbols-outlined text-sm">close</span>
-               </button>
-            </div>
+        <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-sm p-4 flex items-center justify-center animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-slate-900 w-full rounded-[2.5rem] p-6 space-y-6 animate-in zoom-in-95 duration-200 max-h-[85vh] overflow-y-auto">
+            <h3 className="font-bold text-lg text-center border-b dark:border-slate-800 pb-3">تنظیمات روانشناختی</h3>
             
-            <div className="space-y-3">
-              <label className="text-xs font-bold text-slate-500">تمرکز تحلیل بر:</label>
-              <div className="grid grid-cols-2 gap-2">
-                {[
-                  { id: 'general', label: 'عمومی', icon: 'psychology' },
-                  { id: 'career', label: 'شغلی', icon: 'work' },
-                  { id: 'relationships', label: 'روابط', icon: 'group' },
-                  { id: 'anxiety', label: 'اضطراب', icon: 'tsunami' }
-                ].map((area) => (
-                  <button
-                    key={area.id}
-                    onClick={() => updatePreference('focusArea', area.id)}
-                    className={`flex items-center gap-2 p-3 rounded-xl border text-sm transition-all ${analysisPrefs.focusArea === area.id ? 'bg-primary/10 border-primary text-primary font-bold' : 'bg-slate-50 dark:bg-slate-800 border-transparent text-slate-500'}`}
-                  >
-                    <span className="material-symbols-outlined text-sm">{area.icon}</span>
-                    <span>{area.label}</span>
-                  </button>
-                ))}
+            <div className="space-y-4">
+              <section className="space-y-2">
+                 <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-2">عمق تحلیل هوشمند:</span>
+                 <div className="flex gap-1.5 p-1 bg-slate-100 dark:bg-slate-800 rounded-2xl">
+                    {['concise', 'balanced', 'detailed'].map(d => (
+                      <button 
+                        key={d}
+                        onClick={() => updatePref('depth', d)}
+                        className={`flex-1 py-2 rounded-xl text-[10px] font-bold transition-all active:scale-95 border ${prefs.depth === d ? 'bg-white dark:bg-slate-700 text-primary shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                      >
+                        {d === 'concise' ? 'خلاصه' : d === 'balanced' ? 'متعادل' : 'عمیق'}
+                      </button>
+                    ))}
+                 </div>
+              </section>
+
+              <section className="space-y-2">
+                 <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-2">لحن پاسخ‌دهی:</span>
+                 <div className="flex gap-1.5 p-1 bg-slate-100 dark:bg-slate-800 rounded-2xl">
+                    {['empathetic', 'balanced', 'direct'].map(t => (
+                      <button 
+                        key={t}
+                        onClick={() => updatePref('responseTone', t)}
+                        className={`flex-1 py-2 rounded-xl text-[10px] font-bold transition-all active:scale-95 border ${prefs.responseTone === t ? 'bg-white dark:bg-slate-700 text-primary shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                      >
+                        {t === 'empathetic' ? 'همدلانه' : t === 'balanced' ? 'متعادل' : 'صریح'}
+                      </button>
+                    ))}
+                 </div>
+              </section>
+
+              <section className="space-y-2">
+                 <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-2">تمرکز گفتگو:</span>
+                 <div className="grid grid-cols-2 gap-2">
+                    {['general', 'career', 'relationships', 'anxiety'].map(f => (
+                      <button 
+                        key={f}
+                        onClick={() => updatePref('focusArea', f)}
+                        className={`py-3 rounded-2xl text-[10px] font-bold transition-all active:scale-95 border ${prefs.focusArea === f ? 'bg-primary text-white border-primary shadow-md shadow-primary/20' : 'bg-slate-50 dark:bg-slate-800 text-slate-500 hover:bg-slate-100'}`}
+                      >
+                        {f === 'general' ? 'عمومی' : f === 'career' ? 'شغلی' : f === 'relationships' ? 'روابط' : 'اضطراب'}
+                      </button>
+                    ))}
+                 </div>
+              </section>
+
+              <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border dark:border-slate-700">
+                <div className="flex flex-col gap-0.5">
+                   <span className="text-xs font-bold">تفکر عمیق (Gemini Pro)</span>
+                   <span className="text-[9px] opacity-50">تحلیل دقیق‌تر و منطقی‌تر</span>
+                </div>
+                <button onClick={() => updatePref('thinkingEnabled', !prefs.thinkingEnabled)} className={`w-11 h-6 rounded-full transition-all relative ${prefs.thinkingEnabled ? 'bg-primary' : 'bg-slate-300'}`}>
+                  <div className={`size-4 bg-white rounded-full absolute top-1 transition-transform ${prefs.thinkingEnabled ? 'translate-x-6' : 'translate-x-1'}`}></div>
+                </button>
               </div>
             </div>
 
-            <div className="space-y-3">
-              <label className="text-xs font-bold text-slate-500">عمق و جزئیات پاسخ:</label>
-              <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
-                {[
-                  { id: 'concise', label: 'کوتاه' },
-                  { id: 'balanced', label: 'متعادل' },
-                  { id: 'detailed', label: 'عمیق' }
-                ].map((depth) => (
-                  <button
-                    key={depth.id}
-                    onClick={() => updatePreference('depth', depth.id)}
-                    className={`flex-1 py-2 rounded-lg text-xs transition-all ${analysisPrefs.depth === depth.id ? 'bg-white dark:bg-slate-700 shadow-sm text-primary font-bold' : 'text-slate-500'}`}
-                  >
-                    {depth.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <p className="text-[10px] text-slate-400 text-center leading-relaxed">
-              تغییر این تنظیمات بلافاصله بر پاسخ‌های بعدی "همراه خوب من" تأثیر می‌گذارد.
-            </p>
-            
-            <button onClick={() => setShowSettings(false)} className="w-full py-3 bg-primary text-white rounded-xl font-bold text-sm shadow-lg shadow-primary/20">
-              تأیید و ذخیره
-            </button>
+            <button onClick={() => setShowSettings(false)} className="w-full py-4 bg-primary text-white rounded-2xl font-bold shadow-xl shadow-primary/20 hover:brightness-110 active:scale-[0.98] transition-all">اعمال تغییرات هوشمند</button>
           </div>
-          <div className="flex-1" onClick={() => setShowSettings(false)}></div>
         </div>
       )}
 
-      <div className="px-4 py-4 bg-slate-100 dark:bg-slate-900/50 border-b border-slate-200 dark:border-slate-800">
-        <div className="flex justify-between items-end mb-4">
-          <div>
-            <p className="text-xs text-slate-400 mb-1">تحلیل احساسات لحظه‌ای</p>
-            <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-bold">{currentAnalysis.mood}</span>
-              <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] rounded flex items-center">
-                <span className="material-symbols-outlined text-[12px] ml-1">trending_down</span>
-                {currentAnalysis.stressLevel}% استرس
-              </span>
-            </div>
-          </div>
-          <span className="text-[10px] text-slate-500">بروزرسانی: هم‌اکنون</span>
-        </div>
-        <PsychologicalChart data={analysisHistory} label="نمودار تنش روانی" />
+      {/* Analytics Chart */}
+      <div className="px-4 py-2 border-b dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40">
+        <PsychologicalChart data={analysisHistory.length ? analysisHistory : [{
+          time: 'شروع', 
+          stress: currentAnalysis.stressLevel,
+          anxiety: currentAnalysis.anxietyLevel,
+          energy: currentAnalysis.energy
+        }]} />
       </div>
 
-      <main className="flex-1 overflow-y-auto p-4 space-y-6">
-        <div className="flex justify-center mb-6">
-          <span className="px-3 py-1 bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[10px] rounded-full font-medium">امروز</span>
-        </div>
-
+      <main className="flex-1 overflow-y-auto p-4 space-y-6 scroll-smooth scrollbar-hide">
         {messages.map((msg) => (
-          <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-start' : 'justify-end'} gap-3`}>
-            {msg.sender === 'user' && (
-              <div className="size-8 rounded-full overflow-hidden border border-slate-300 dark:border-slate-700 shrink-0">
-                <img src={userAvatarSrc} alt="User" className="w-full h-full object-cover" />
-              </div>
-            )}
-            <div className={`flex flex-col gap-1 max-w-[80%] ${msg.sender === 'user' ? 'items-start' : 'items-end'}`}>
-              <span className="text-[10px] text-slate-400 px-1">{msg.sender === 'user' ? 'شما' : 'همراه خوب من'}</span>
-              <div className={`p-3 rounded-2xl shadow-sm leading-relaxed text-sm ${
+          <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-start' : 'justify-end'} gap-3 animate-in fade-in slide-in-from-bottom-2 duration-500`}>
+            <div className={`flex flex-col gap-1.5 max-w-[88%] ${msg.sender === 'user' ? 'items-start' : 'items-end'}`}>
+              <div 
+                style={msg.sender === 'user' ? { backgroundColor: user.theme?.accentColor } : {}}
+                className={`p-4 rounded-[1.5rem] shadow-sm text-sm leading-relaxed transition-all relative ${
                 msg.sender === 'user' 
-                ? 'bg-primary text-white rounded-tr-none' 
-                : 'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-tl-none'
+                  ? 'text-white rounded-tr-none' 
+                  : `bg-white dark:bg-slate-800 dark:text-slate-200 border dark:border-slate-700 rounded-tl-none ${msg.analysis ? 'analysis-bubble-glow animate-breath ring-2 ring-primary/30 border-primary/20 shadow-xl' : ''}`
               }`}>
-                {msg.text}
+                {msg.analysis && (
+                  <div className="mb-2.5 flex items-center gap-2 text-primary font-black text-[10px] uppercase tracking-widest bg-primary/5 p-2 rounded-xl border border-primary/10">
+                     <span className="material-symbols-outlined text-[16px] animate-pulse">insights</span>
+                     <span>تحلیل روانشناختی همراه</span>
+                  </div>
+                )}
+                <div className="whitespace-pre-wrap">{msg.text}</div>
+                {msg.media?.type === 'image' && <img src={msg.media.url} className="mt-3 rounded-xl max-h-60 w-full object-cover shadow-lg border border-white/5" alt="Generated" />}
+                {msg.media?.type === 'video' && <video src={msg.media.url} controls className="mt-3 rounded-xl w-full shadow-lg border border-white/5" />}
+                
+                {msg.grounding && msg.grounding.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-700 space-y-1.5">
+                    <p className="text-[9px] font-bold opacity-50 uppercase tracking-widest flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[10px]">link</span> منابع استناد:
+                    </p>
+                    {msg.grounding.map((g, idx) => (
+                      <a key={idx} href={g.uri} target="_blank" rel="noreferrer" className="text-[10px] text-blue-500 block truncate hover:underline bg-blue-500/5 p-1.5 rounded-lg border border-blue-500/10 transition-colors">🔗 {g.title}</a>
+                    ))}
+                  </div>
+                )}
               </div>
-              <span className="text-[9px] text-slate-400 mt-0.5">{new Date(msg.timestamp).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })}</span>
+              <div className="flex items-center gap-2 px-1">
+                 <span className="text-[9px] text-slate-400 font-medium">{new Date(msg.timestamp).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })}</span>
+                 {msg.sender === 'ai' && <span className="material-symbols-outlined text-[10px] text-slate-400">check_circle</span>}
+              </div>
             </div>
-            {msg.sender === 'ai' && (
-              <div className="size-8 rounded-full overflow-hidden border border-slate-300 dark:border-slate-700 shrink-0">
-                <img src="https://picsum.photos/seed/doctor/100/100" alt="AI" className="w-full h-full object-cover" />
-              </div>
-            )}
           </div>
         ))}
         {isTyping && (
-          <div className="flex justify-end gap-3 animate-pulse">
-            <div className="bg-slate-200 dark:bg-slate-800 text-slate-400 px-4 py-2 rounded-2xl rounded-tl-none text-xs">در حال نوشتن...</div>
+          <div className="flex justify-end gap-2 px-2">
+            <div className="bg-slate-200 dark:bg-slate-800 px-4 py-2.5 rounded-full text-[10px] text-slate-500 font-bold flex items-center gap-2 animate-breath border border-slate-300/50 dark:border-slate-700/50">
+               <div className="flex gap-1">
+                 <div className="size-1 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                 <div className="size-1 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                 <div className="size-1 bg-slate-400 rounded-full animate-bounce"></div>
+               </div>
+               <span>در حال پردازش تحلیل...</span>
+            </div>
           </div>
         )}
         <div ref={messagesEndRef} />
       </main>
 
-      <footer className="p-4 border-t border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-background-dark/80 backdrop-blur-md">
-        <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800/50 rounded-2xl p-2 border border-slate-200 dark:border-slate-700 focus-within:border-primary transition-colors">
-          <button className="size-10 flex items-center justify-center rounded-full text-slate-400 hover:text-primary">
-            <span className="material-symbols-outlined">mic</span>
+      <footer className="p-4 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 relative">
+        {showMediaMenu && (
+          <div className="absolute bottom-full left-4 right-4 mb-4 bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl rounded-[2.5rem] shadow-2xl border dark:border-slate-700 p-6 grid grid-cols-3 gap-6 animate-in slide-in-from-bottom-8 duration-500 z-30">
+            <button onClick={() => mediaInputRef.current?.click()} className="flex flex-col items-center gap-2.5 group active:scale-90 transition-all">
+               <div className="size-14 bg-blue-100 dark:bg-blue-900/30 text-blue-500 rounded-[1.5rem] flex items-center justify-center group-hover:bg-blue-500 group-hover:text-white transition-all shadow-md">
+                  <span className="material-symbols-outlined text-2xl">image</span>
+               </div>
+               <span className="text-[10px] font-black uppercase tracking-tighter">ارسال عکس</span>
+            </button>
+            <button onClick={() => handleSend(undefined, 'image')} className="flex flex-col items-center gap-2.5 group active:scale-90 transition-all">
+               <div className="size-14 bg-purple-100 dark:bg-purple-900/30 text-purple-500 rounded-[1.5rem] flex items-center justify-center group-hover:bg-purple-500 group-hover:text-white transition-all shadow-md">
+                  <span className="material-symbols-outlined text-2xl">auto_fix_high</span>
+               </div>
+               <span className="text-[10px] font-black uppercase tracking-tighter">تولید تصویر</span>
+            </button>
+            <button onClick={() => handleSend(undefined, 'video')} className="flex flex-col items-center gap-2.5 group active:scale-90 transition-all">
+               <div className="size-14 bg-orange-100 dark:bg-orange-900/30 text-orange-500 rounded-[1.5rem] flex items-center justify-center group-hover:bg-orange-500 group-hover:text-white transition-all shadow-md">
+                  <span className="material-symbols-outlined text-2xl">movie</span>
+               </div>
+               <span className="text-[10px] font-black uppercase tracking-tighter">ساخت ویدیو</span>
+            </button>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2.5">
+          <button onClick={() => setShowMediaMenu(!showMediaMenu)} className={`size-12 rounded-full flex items-center justify-center transition-all active:scale-90 shadow-sm ${showMediaMenu ? 'bg-primary text-white shadow-primary/20 scale-110' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 border dark:border-slate-800'}`}>
+            <span className="material-symbols-outlined transition-transform duration-500" style={{ transform: showMediaMenu ? 'rotate(135deg)' : 'rotate(0)' }}>{showMediaMenu ? 'close' : 'add'}</span>
           </button>
-          <input 
-            type="text"
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-            placeholder="هر چه در ذهن دارید بگویید..."
-            className="flex-1 bg-transparent border-none text-sm text-slate-900 dark:text-white focus:ring-0 placeholder:text-slate-400 dark:placeholder:text-slate-500"
-          />
+          <div className="flex-1 bg-slate-100 dark:bg-slate-800 rounded-[1.5rem] px-5 py-2.5 flex items-center focus-within:ring-2 focus-within:ring-primary/30 transition-all border dark:border-slate-700/50 shadow-inner">
+            <input 
+              type="text" value={inputText} onChange={(e) => setInputText(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+              placeholder="هر چه در ذهن دارید..." className="flex-1 bg-transparent border-none text-sm focus:ring-0 placeholder-slate-400 font-medium"
+            />
+            <button className="size-8 text-slate-400 hover:text-primary transition-all active:scale-90"><span className="material-symbols-outlined">mic</span></button>
+          </div>
           <button 
-            onClick={handleSend}
-            disabled={!inputText.trim() || isTyping}
-            className="size-10 bg-primary text-white rounded-full flex items-center justify-center shadow-lg shadow-primary/20 disabled:opacity-50 transition-opacity"
+            onClick={() => handleSend()} disabled={!inputText.trim() && !mediaToUpload}
+            className="size-12 text-white rounded-full flex items-center justify-center shadow-lg active:scale-90 transition-all disabled:opacity-30 disabled:pointer-events-none hover:brightness-110"
+            style={{ backgroundColor: user.theme?.accentColor || 'var(--color-primary)' }}
           >
-            <span className="material-symbols-outlined rtl:rotate-180">send</span>
+            <span className="material-symbols-outlined rtl:rotate-180 text-xl">send</span>
           </button>
         </div>
+        <input type="file" ref={mediaInputRef} className="hidden" accept="image/*" onChange={handleFileUpload} />
       </footer>
     </div>
   );

@@ -8,35 +8,27 @@ import AssessmentScreen from './components/AssessmentScreen';
 import ProfileScreen from './components/ProfileScreen';
 import FeaturesScreen from './components/FeaturesScreen';
 
-const STORAGE_PREFIX = 'psychai_user_';
+const STORAGE_PREFIX = 'psychai_user_v2_';
 
 const App: React.FC = () => {
   const [currentScreen, setCurrentScreen] = useState<Screen>(Screen.Welcome);
   const [user, setUser] = useState<User | null>(null);
 
-  // Apply theme and accent color
   useEffect(() => {
     const applyTheme = (settings: ThemeSettings) => {
-      // Dark mode toggle
       if (settings.mode === 'dark') {
         document.documentElement.classList.add('dark');
       } else {
         document.documentElement.classList.remove('dark');
       }
-
-      // Accent color
       document.documentElement.style.setProperty('--color-primary', settings.accentColor);
-      
-      // Helper for RGB values for filters/shadows if needed
-      // (Simplified: just setting the hex is usually enough for Tailwind)
     };
 
     if (user?.theme) {
       applyTheme(user.theme);
     } else {
-      // Default theme
       const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      applyTheme({ mode: isDark ? 'dark' : 'light', accentColor: '#135bec' });
+      applyTheme({ mode: isDark ? 'dark' : 'light', accentColor: '#135bec', personalityMode: 'kind', speechSpeed: 1 });
     }
   }, [user?.theme]);
 
@@ -45,13 +37,15 @@ const App: React.FC = () => {
   const handleLogin = (userData: User) => {
     const saved = localStorage.getItem(`${STORAGE_PREFIX}${userData.phoneNumber}`);
     if (saved) {
-        const savedUser = JSON.parse(saved);
-        setUser(savedUser);
+        setUser(JSON.parse(saved));
     } else {
         const newUser: User = { 
           ...userData, 
           history: [],
-          theme: { mode: 'dark', accentColor: '#135bec' } // Default to dark for premium feel
+          sessions: [],
+          theme: { mode: 'dark', accentColor: '#135bec', personalityMode: 'kind', speechSpeed: 1 },
+          // Fix: Added responseTone: 'balanced' to fulfill AnalysisPreferences requirement
+          analysisPreferences: { focusArea: 'general', depth: 'balanced', responseTone: 'balanced', thinkingEnabled: false, searchEnabled: true, modelSpeed: 'balanced' }
         };
         setUser(newUser);
         localStorage.setItem(`${STORAGE_PREFIX}${userData.phoneNumber}`, JSON.stringify(newUser));
@@ -67,14 +61,6 @@ const App: React.FC = () => {
   const updateUser = (updatedUser: User) => {
     setUser(updatedUser);
     localStorage.setItem(`${STORAGE_PREFIX}${updatedUser.phoneNumber}`, JSON.stringify(updatedUser));
-  };
-
-  const clearHistory = () => {
-    if (user) {
-        const updatedUser = { ...user, history: [] };
-        updateUser(updatedUser);
-        alert('حافظه گفتگو با موفقیت پاک شد.');
-    }
   };
 
   const navigateToAssessments = () => setCurrentScreen(Screen.Assessments);
@@ -103,8 +89,13 @@ const App: React.FC = () => {
         />
       )}
 
-      {currentScreen === Screen.Assessments && (
-        <AssessmentScreen onBack={backToChat} onNavigateToProfile={navigateToProfile} />
+      {currentScreen === Screen.Assessments && user && (
+        <AssessmentScreen 
+          user={user} 
+          onBack={backToChat} 
+          onNavigateToProfile={navigateToProfile} 
+          onUpdateUser={updateUser}
+        />
       )}
 
       {currentScreen === Screen.Profile && user && (
@@ -112,8 +103,9 @@ const App: React.FC = () => {
           user={user} 
           onBack={backToChat} 
           onLogout={handleLogout} 
-          onClearHistory={clearHistory}
+          onClearHistory={() => updateUser({ ...user, history: [] })}
           onUpdateTheme={(theme) => updateUser({ ...user, theme })}
+          onNavigateToAssessments={navigateToAssessments}
         />
       )}
 
